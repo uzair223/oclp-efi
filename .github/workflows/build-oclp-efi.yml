@@ -26,7 +26,7 @@ jobs:
           HOMEBREW_NO_AUTO_UPDATE=1 \
           HOMEBREW_NO_REQUIRE_TAP_TRUST=1 \
             brew install --cask opencore-patcher
-
+            
       - name: Build EFI
         env:
           MODEL: ${{ inputs.model }}
@@ -34,62 +34,58 @@ jobs:
         run: |
           set -e
 
-          mkdir -p "$GITHUB_WORKSPACE/output"
+          mkdir -p "$GITHUB_WORKSPACE/output/OpenCore-Build"
 
-          cat > watcher.sh <<'EOF'
-          #!/bin/bash
-
-          DEST="$GITHUB_WORKSPACE/output/OpenCore-Build"
-
-          while true; do
+          (
+            while true; do
               SRC=$(find /var/folders \
                 -path "*/Build-Folder/OpenCore-Build" \
                 -type d \
                 -print -quit 2>/dev/null || true)
 
               if [ -n "$SRC" ]; then
-                  echo "Found build directory:"
-                  echo "$SRC"
+                echo "Syncing from:"
+                echo "$SRC"
 
-                  mkdir -p "$DEST"
-
-                  rsync -a "$SRC/" "$DEST/" 2>/dev/null || true
-
-                  if [ -f "$DEST/EFI/BOOT/BOOTx64.efi" ]; then
-                      echo "Complete EFI captured"
-                      exit 0
-                  fi
+                rsync -a "$SRC/" \
+                  "$GITHUB_WORKSPACE/output/OpenCore-Build/" \
+                  2>/dev/null || true
               fi
 
-              sleep 0.05
-          done
-          EOF
-
-          chmod +x watcher.sh
-
-          ./watcher.sh &
-          WATCHER_PID=$!
+              sleep 0.1
+            done
+          ) &
+          SYNC_PID=$!
 
           /Applications/OpenCore-Patcher.app/Contents/MacOS/OpenCore-Patcher \
             --build \
             --model "$MODEL" \
             --verbose || true
 
-          # give rsync a final chance
-          sleep 2
+          # Stop sync process
+          kill "$SYNC_PID" 2>/dev/null || true
 
-          kill "$WATCHER_PID" 2>/dev/null || true
+          # One final copy after build completes
+          SRC=$(find /var/folders \
+            -path "*/Build-Folder/OpenCore-Build" \
+            -type d \
+            -print -quit 2>/dev/null || true)
 
-          echo "Checking output..."
+          if [ -n "$SRC" ]; then
+            rsync -a "$SRC/" \
+              "$GITHUB_WORKSPACE/output/OpenCore-Build/" \
+              || true
+          fi
 
-          find "$GITHUB_WORKSPACE/output" -maxdepth 4 -type f
+          echo "Final files:"
+          find "$GITHUB_WORKSPACE/output/OpenCore-Build" -maxdepth 3 -type f
 
           test -f "$GITHUB_WORKSPACE/output/OpenCore-Build/EFI/BOOT/BOOTx64.efi"
           test -f "$GITHUB_WORKSPACE/output/OpenCore-Build/EFI/OC/OpenCore.efi"
           test -f "$GITHUB_WORKSPACE/output/OpenCore-Build/EFI/OC/config.plist"
 
-          echo "EFI successfully captured"
-
+          echo "EFI complete"
+          
       - name: Create download archive
         run: |
           cd "$GITHUB_WORKSPACE/output/OpenCore-Build"
