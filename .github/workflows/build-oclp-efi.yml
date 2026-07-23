@@ -40,9 +40,20 @@ jobs:
           build_status=$?
           set -e
 
-          test -f Build-Folder/OpenCore-Build/EFI/BOOT/BOOTx64.efi
-          test -f Build-Folder/OpenCore-Build/EFI/OC/OpenCore.efi
-          test -f Build-Folder/OpenCore-Build/EFI/OC/config.plist
+          build_folder="$(find /var/folders /private/var/folders -path "*/Build-Folder/OpenCore-Build" -type d 2>/dev/null | head -n 1)"
+
+          if [ -z "$build_folder" ]; then
+            echo "Could not find the generated OpenCore-Build folder"
+            exit 1
+          fi
+
+          test -f "$build_folder/EFI/BOOT/BOOTx64.efi"
+          test -f "$build_folder/EFI/OC/OpenCore.efi"
+          test -f "$build_folder/EFI/OC/config.plist"
+
+          rm -rf Build-Folder/OpenCore-Build
+          mkdir -p Build-Folder
+          cp -R "$build_folder" Build-Folder/OpenCore-Build
 
           if [ "$build_status" -ne 0 ]; then
             echo "OpenCore-Patcher exited with status $build_status after generating the EFI; continuing because the expected files are present."
