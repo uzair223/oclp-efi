@@ -2,55 +2,72 @@ name: Build OCLP EFI
 
 on:
   workflow_dispatch:
-    inputs:
-      model:
-        description: Target Mac model
-        required: true
-        default: Macmini6,2
-        type: choice
-        options:
-          - Macmini6,1
-          - Macmini6,2
-
-permissions:
-  contents: read
 
 jobs:
   build:
     runs-on: macos-15-intel
+    timeout-minutes: 30
 
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Clone OCLP
+      - name: Install OCLP
         run: |
-          git clone --depth=1 \
-            https://github.com/dortania/OpenCore-Legacy-Patcher.git \
-            oclp
-
-      - name: Install Python dependencies
-        run: |
-          python3 -m pip install --upgrade pip
-          pip3 install -r oclp/requirements.txt
+          HOMEBREW_NO_AUTO_UPDATE=1 \
+          HOMEBREW_NO_REQUIRE_TAP_TRUST=1 \
+            brew install --cask opencore-patcher
 
       - name: Build EFI
-        env:
-          MODEL: ${{ inputs.model }}
         run: |
-          cd oclp
+          mkdir -p "$GITHUB_WORKSPACE/output"
 
-          python3 OpenCore-Patcher-GUI.command \
+          cat > watcher.sh <<'EOF'
+          #!/bin/bash
+
+          while true; do
+            found=$(find /var/folders \
+              -path "*/Build-Folder/OpenCore-Build/EFI/OC/config.plist" \
+              -print -quit 2>/dev/null)
+
+            if [ -n "$found" ]; then
+              src=$(dirname "$(dirname "$(dirname "$found")")")
+              echo "Found build:"
+              echo "$src"
+
+              rm -rf "$GITHUB_WORKSPACE/output/EFI"
+              cp -R "$src/EFI" "$GITHUB_WORKSPACE/output/"
+
+              echo "EFI copied"
+              exit 0
+            fi
+
+            sleep 0.05
+          done
+          EOF
+
+          chmod +x watcher.sh
+
+          ./watcher.sh &
+          WATCHER=$!
+
+          /Applications/OpenCore-Patcher.app/Contents/MacOS/OpenCore-Patcher \
             --build \
-            --model "$MODEL" \
-            --verbose
+            --model Macmini6,2 \
+            --verbose || true
 
-          test -f Build-Folder/OpenCore-Build/EFI/BOOT/BOOTx64.efi
-          test -f Build-Folder/OpenCore-Build/EFI/OC/OpenCore.efi
-          test -f Build-Folder/OpenCore-Build/EFI/OC/config.plist
+          wait $WATCHER || true
 
-          find Build-Folder/OpenCore-Build
+          ls -R "$GITHUB_WORKSPACE/output"
 
-      - uses: actions/upload-artifact@v4
+          test -f "$GITHUB_WORKSPACE/output/EFI/BOOT/BOOTx64.efi"
+          test -f "$GITHUB_WORKSPACE/output/EFI/OC/OpenCore.efi"
+          test -f "$GITHUB_WORKSPACE/output/EFI/OC/config.plist"
+
+      - name: Package EFI
+        run: |
+          cd output
+          zip -r ../Macmini6,2-OCLP-EFI.zip EFI
+
+      - name: Upload EFI
+        uses: actions/upload-artifact@v4
         with:
-          name: OCLP-EFI-${{ inputs.model }}
-          path: oclp/Build-Folder/OpenCore-Build
+          name: Macmini6,2-OCLP-EFI
+          path: Macmini6,2-OCLP-EFI.zip
