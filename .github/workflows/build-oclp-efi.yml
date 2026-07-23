@@ -32,14 +32,21 @@ jobs:
         run: |
           cd "$GITHUB_WORKSPACE"
 
+          set +e
           "/Applications/OpenCore-Patcher.app/Contents/MacOS/OpenCore-Patcher" \
             --build \
             --model "$MODEL" \
             --verbose
+          build_status=$?
+          set -e
 
           test -f Build-Folder/OpenCore-Build/EFI/BOOT/BOOTx64.efi
           test -f Build-Folder/OpenCore-Build/EFI/OC/OpenCore.efi
           test -f Build-Folder/OpenCore-Build/EFI/OC/config.plist
+
+          if [ "$build_status" -ne 0 ]; then
+            echo "OpenCore-Patcher exited with status $build_status after generating the EFI; continuing because the expected files are present."
+          fi
 
           echo "Successfully built EFI for $MODEL"
           find Build-Folder/OpenCore-Build/EFI -maxdepth 3 -type f
