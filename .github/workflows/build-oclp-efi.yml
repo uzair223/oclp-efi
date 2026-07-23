@@ -2,6 +2,18 @@ name: Build OCLP EFI
 
 on:
   workflow_dispatch:
+    inputs:
+      model:
+        description: Target Mac model
+        required: true
+        default: Macmini6,2
+        type: choice
+        options:
+          - Macmini6,1
+          - Macmini6,2
+
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -9,65 +21,84 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - name: Install OCLP
+      - name: Install OpenCore Legacy Patcher
         run: |
           HOMEBREW_NO_AUTO_UPDATE=1 \
           HOMEBREW_NO_REQUIRE_TAP_TRUST=1 \
             brew install --cask opencore-patcher
 
       - name: Build EFI
+        env:
+          MODEL: ${{ inputs.model }}
+        shell: bash
         run: |
+          set -e
+
           mkdir -p "$GITHUB_WORKSPACE/output"
 
           cat > watcher.sh <<'EOF'
           #!/bin/bash
 
+          DEST="$GITHUB_WORKSPACE/output/OpenCore-Build"
+
           while true; do
-            found=$(find /var/folders \
-              -path "*/Build-Folder/OpenCore-Build/EFI/OC/config.plist" \
-              -print -quit 2>/dev/null)
+              SRC=$(find /var/folders \
+                -path "*/Build-Folder/OpenCore-Build" \
+                -type d \
+                -print -quit 2>/dev/null || true)
 
-            if [ -n "$found" ]; then
-              src=$(dirname "$(dirname "$(dirname "$found")")")
-              echo "Found build:"
-              echo "$src"
+              if [ -n "$SRC" ]; then
+                  echo "Found build directory:"
+                  echo "$SRC"
 
-              rm -rf "$GITHUB_WORKSPACE/output/EFI"
-              cp -R "$src/EFI" "$GITHUB_WORKSPACE/output/"
+                  mkdir -p "$DEST"
 
-              echo "EFI copied"
-              exit 0
-            fi
+                  rsync -a "$SRC/" "$DEST/" 2>/dev/null || true
 
-            sleep 0.05
+                  if [ -f "$DEST/EFI/BOOT/BOOTx64.efi" ]; then
+                      echo "Complete EFI captured"
+                      exit 0
+                  fi
+              fi
+
+              sleep 0.05
           done
           EOF
 
           chmod +x watcher.sh
 
           ./watcher.sh &
-          WATCHER=$!
+          WATCHER_PID=$!
 
           /Applications/OpenCore-Patcher.app/Contents/MacOS/OpenCore-Patcher \
             --build \
-            --model Macmini6,2 \
+            --model "$MODEL" \
             --verbose || true
 
-          wait $WATCHER || true
+          # give rsync a final chance
+          sleep 2
 
-          ls -R "$GITHUB_WORKSPACE/output"
+          kill "$WATCHER_PID" 2>/dev/null || true
 
-          test -f "$GITHUB_WORKSPACE/output/EFI/BOOT/BOOTx64.efi"
-          test -f "$GITHUB_WORKSPACE/output/EFI/OC/OpenCore.efi"
-          test -f "$GITHUB_WORKSPACE/output/EFI/OC/config.plist"
+          echo "Checking output..."
 
-      - name: Package EFI
+          find "$GITHUB_WORKSPACE/output" -maxdepth 4 -type f
+
+          test -f "$GITHUB_WORKSPACE/output/OpenCore-Build/EFI/BOOT/BOOTx64.efi"
+          test -f "$GITHUB_WORKSPACE/output/OpenCore-Build/EFI/OC/OpenCore.efi"
+          test -f "$GITHUB_WORKSPACE/output/OpenCore-Build/EFI/OC/config.plist"
+
+          echo "EFI successfully captured"
+
+      - name: Create download archive
         run: |
-          cd output
-          zip -r ../Macmini6,2-OCLP-EFI.zip EFI
+          cd "$GITHUB_WORKSPACE/output/OpenCore-Build"
+          zip -r "$GITHUB_WORKSPACE/OCLP-${{ inputs.model }}-EFI.zip" EFI
 
       - name: Upload EFI
         uses: actions/upload-artifact@v4
         with:
-          name: Macmini6,2-OCLP-EFI
-          path: Macmini6,2-OCLP-EFI.zip
+          name: OCLP-${{ inputs.model }}-EFI
+          path: OCLP-${{ inputs.model }}-EFI.zip
+          if-no-files-found: error
+          retention-days: 7
