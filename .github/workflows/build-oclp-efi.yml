@@ -1,5 +1,4 @@
 name: Build OCLP EFI
-
 on:
   workflow_dispatch:
     inputs:
@@ -11,15 +10,12 @@ on:
         options:
           - Macmini6,1
           - Macmini6,2
-
 permissions:
   contents: read
-
 jobs:
   build:
     runs-on: macos-15-intel
     timeout-minutes: 30
-
     steps:
       - name: Install OpenCore Legacy Patcher
         run: |
@@ -33,64 +29,57 @@ jobs:
         shell: bash
         run: |
           set -e
-
           mkdir -p "$GITHUB_WORKSPACE/output/OpenCore-Build"
-
           (
             while true; do
               SRC=$(find /var/folders \
                 -path "*/Build-Folder/OpenCore-Build" \
                 -type d \
                 -print -quit 2>/dev/null || true)
-
               if [ -n "$SRC" ]; then
                 echo "Syncing from:"
                 echo "$SRC"
-
                 rsync -a "$SRC/" \
                   "$GITHUB_WORKSPACE/output/OpenCore-Build/" \
                   2>/dev/null || true
               fi
-
               sleep 0.1
             done
           ) &
           SYNC_PID=$!
-
           /Applications/OpenCore-Patcher.app/Contents/MacOS/OpenCore-Patcher \
             --build \
             --model "$MODEL" \
             --verbose || true
-
           # Stop sync process
           kill "$SYNC_PID" 2>/dev/null || true
-
           # One final copy after build completes
           SRC=$(find /var/folders \
             -path "*/Build-Folder/OpenCore-Build" \
             -type d \
             -print -quit 2>/dev/null || true)
-
           if [ -n "$SRC" ]; then
             rsync -a "$SRC/" \
               "$GITHUB_WORKSPACE/output/OpenCore-Build/" \
               || true
           fi
-
+          # --build only produces EFI/OC; synthesize the EFI/BOOT
+          # fallback bootloader from OpenCore.efi ourselves, since
+          # OCLP only writes it during an actual install step.
+          mkdir -p "$GITHUB_WORKSPACE/output/OpenCore-Build/EFI/BOOT"
+          cp "$GITHUB_WORKSPACE/output/OpenCore-Build/EFI/OC/OpenCore.efi" \
+             "$GITHUB_WORKSPACE/output/OpenCore-Build/EFI/BOOT/BOOTx64.efi"
           echo "Final files:"
           find "$GITHUB_WORKSPACE/output/OpenCore-Build" -maxdepth 3 -type f
-
           test -f "$GITHUB_WORKSPACE/output/OpenCore-Build/EFI/BOOT/BOOTx64.efi"
           test -f "$GITHUB_WORKSPACE/output/OpenCore-Build/EFI/OC/OpenCore.efi"
           test -f "$GITHUB_WORKSPACE/output/OpenCore-Build/EFI/OC/config.plist"
-
           echo "EFI complete"
           
       - name: Create download archive
         run: |
           cd "$GITHUB_WORKSPACE/output/OpenCore-Build"
           zip -r "$GITHUB_WORKSPACE/OCLP-${{ inputs.model }}-EFI.zip" EFI
-
       - name: Upload EFI
         uses: actions/upload-artifact@v4
         with:
