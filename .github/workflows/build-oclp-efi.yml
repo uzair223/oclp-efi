@@ -1,0 +1,54 @@
+name: Build OCLP EFI
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: Mac mini model identifier
+        required: true
+        default: Macmini6,2
+        type: choice
+        options:
+          - Macmini6,1
+          - Macmini6,2
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15-intel
+    timeout-minutes: 30
+
+    steps:
+      - name: Install OpenCore Legacy Patcher
+        run: |
+          HOMEBREW_NO_AUTO_UPDATE=1 \
+            brew install --cask opencore-patcher
+
+      - name: Build model-specific EFI
+        env:
+          MODEL: ${{ inputs.model }}
+        run: |
+          cd "$GITHUB_WORKSPACE"
+
+          "/Applications/OpenCore-Patcher.app/Contents/MacOS/OpenCore-Patcher" \
+            --build \
+            --model "$MODEL" \
+            --verbose
+
+          test -f Build-Folder/OpenCore-Build/EFI/BOOT/BOOTx64.efi
+          test -f Build-Folder/OpenCore-Build/EFI/OC/OpenCore.efi
+          test -f Build-Folder/OpenCore-Build/EFI/OC/config.plist
+
+          echo "Successfully built EFI for $MODEL"
+          find Build-Folder/OpenCore-Build/EFI -maxdepth 3 -type f
+
+      - name: Upload EFI
+        uses: actions/upload-artifact@v4
+        with:
+          name: OCLP-EFI-${{ inputs.model }}
+          path: Build-Folder/OpenCore-Build/
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 7
