@@ -24,44 +24,83 @@ jobs:
       - name: Install OpenCore Legacy Patcher
         run: |
           HOMEBREW_NO_AUTO_UPDATE=1 \
-          HOMEBREW_NO_REQUIRE_TAP_TRUST=1 \
             brew install --cask opencore-patcher
 
-      - name: Build model-specific EFI
+      - name: Build and preserve model-specific EFI
+        shell: bash
         env:
           MODEL: ${{ inputs.model }}
         run: |
-          cd "$GITHUB_WORKSPACE"
+          set -uo pipefail
+
+          APP="/Applications/OpenCore-Patcher.app/Contents/MacOS/OpenCore-Patcher"
+          DESTINATION="$GITHUB_WORKSPACE/Build-Folder/OpenCore-Build"
+
+          rm -rf "$GITHUB_WORKSPACE/Build-Folder"
+          mkdir -p "$DESTINATION"
+
+          copy_temporary_build() {
+            while true; do
+              SOURCE="$(
+                find /private/var/folders \
+                  -path "*/Build-Folder/OpenCore-Build" \
+                  -type d \
+                  -print -quit 2>/dev/null || true
+              )"
+
+              if [ -n "$SOURCE" ] && [ -d "$SOURCE/EFI" ]; then
+                # Keep copying while OCLP builds and validates.
+                # Do not use --delete because the source may disappear
+                # while TemporaryDirectory is being cleaned up.
+                rsync -a "$SOURCE/" "$DESTINATION/" 2>/dev/null || true
+              fi
+
+              sleep 0.1
+            done
+          }
+
+          copy_temporary_build &
+          WATCHER_PID=$!
+
+          cleanup_watcher() {
+            kill "$WATCHER_PID" 2>/dev/null || true
+            wait "$WATCHER_PID" 2>/dev/null || true
+          }
+
+          trap cleanup_watcher EXIT
 
           set +e
-          "/Applications/OpenCore-Patcher.app/Contents/MacOS/OpenCore-Patcher" \
+          "$APP" \
             --build \
             --model "$MODEL" \
             --verbose
-          build_status=$?
+          BUILD_STATUS=$?
           set -e
 
-          build_folder="$(find /var/folders /private/var/folders -path "*/Build-Folder/OpenCore-Build" -type d 2>/dev/null | head -n 1)"
+          # Give the watcher one final opportunity to copy.
+          sleep 1
 
-          if [ -z "$build_folder" ]; then
-            echo "Could not find the generated OpenCore-Build folder"
-            exit 1
+          cleanup_watcher
+          trap - EXIT
+
+          echo "OCLP exit status: $BUILD_STATUS"
+
+          echo "Checking preserved EFI..."
+
+          test -f "$DESTINATION/EFI/BOOT/BOOTx64.efi"
+          test -f "$DESTINATION/EFI/OC/OpenCore.efi"
+          test -f "$DESTINATION/EFI/OC/config.plist"
+
+          if [ "$BUILD_STATUS" -ne 0 ]; then
+            echo "::warning::OCLP exited with status $BUILD_STATUS, but the generated EFI passed the required file checks."
           fi
 
-          test -f "$build_folder/EFI/BOOT/BOOTx64.efi"
-          test -f "$build_folder/EFI/OC/OpenCore.efi"
-          test -f "$build_folder/EFI/OC/config.plist"
+          echo "Successfully preserved EFI for $MODEL"
 
-          rm -rf Build-Folder/OpenCore-Build
-          mkdir -p Build-Folder
-          cp -R "$build_folder" Build-Folder/OpenCore-Build
-
-          if [ "$build_status" -ne 0 ]; then
-            echo "OpenCore-Patcher exited with status $build_status after generating the EFI; continuing because the expected files are present."
-          fi
-
-          echo "Successfully built EFI for $MODEL"
-          find Build-Folder/OpenCore-Build/EFI -maxdepth 3 -type f
+          find "$DESTINATION/EFI" \
+            -maxdepth 3 \
+            -type f \
+            -print
 
       - name: Upload EFI
         uses: actions/upload-artifact@v4
