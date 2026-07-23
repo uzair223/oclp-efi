@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       model:
-        description: Mac mini model identifier
+        description: Target Mac model
         required: true
         default: Macmini6,2
         type: choice
@@ -18,95 +18,39 @@ permissions:
 jobs:
   build:
     runs-on: macos-15-intel
-    timeout-minutes: 30
 
     steps:
-      - name: Install OpenCore Legacy Patcher
-        run: |
-          HOMEBREW_NO_AUTO_UPDATE=1 \
-            brew install --cask opencore-patcher
+      - uses: actions/checkout@v4
 
-      - name: Build and preserve model-specific EFI
-        shell: bash
+      - name: Clone OCLP
+        run: |
+          git clone --depth=1 \
+            https://github.com/dortania/OpenCore-Legacy-Patcher.git \
+            oclp
+
+      - name: Install Python dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          pip3 install -r oclp/requirements.txt
+
+      - name: Build EFI
         env:
           MODEL: ${{ inputs.model }}
         run: |
-          set -uo pipefail
+          cd oclp
 
-          APP="/Applications/OpenCore-Patcher.app/Contents/MacOS/OpenCore-Patcher"
-          DESTINATION="$GITHUB_WORKSPACE/Build-Folder/OpenCore-Build"
-
-          rm -rf "$GITHUB_WORKSPACE/Build-Folder"
-          mkdir -p "$DESTINATION"
-
-          copy_temporary_build() {
-            while true; do
-              SOURCE="$(
-                find /private/var/folders \
-                  -path "*/Build-Folder/OpenCore-Build" \
-                  -type d \
-                  -print -quit 2>/dev/null || true
-              )"
-
-              if [ -n "$SOURCE" ] && [ -d "$SOURCE/EFI" ]; then
-                # Keep copying while OCLP builds and validates.
-                # Do not use --delete because the source may disappear
-                # while TemporaryDirectory is being cleaned up.
-                rsync -a "$SOURCE/" "$DESTINATION/" 2>/dev/null || true
-              fi
-
-              sleep 0.1
-            done
-          }
-
-          copy_temporary_build &
-          WATCHER_PID=$!
-
-          cleanup_watcher() {
-            kill "$WATCHER_PID" 2>/dev/null || true
-            wait "$WATCHER_PID" 2>/dev/null || true
-          }
-
-          trap cleanup_watcher EXIT
-
-          set +e
-          "$APP" \
+          python3 OpenCore-Patcher-GUI.command \
             --build \
             --model "$MODEL" \
             --verbose
-          BUILD_STATUS=$?
-          set -e
 
-          # Give the watcher one final opportunity to copy.
-          sleep 1
+          test -f Build-Folder/OpenCore-Build/EFI/BOOT/BOOTx64.efi
+          test -f Build-Folder/OpenCore-Build/EFI/OC/OpenCore.efi
+          test -f Build-Folder/OpenCore-Build/EFI/OC/config.plist
 
-          cleanup_watcher
-          trap - EXIT
+          find Build-Folder/OpenCore-Build
 
-          echo "OCLP exit status: $BUILD_STATUS"
-
-          echo "Checking preserved EFI..."
-
-          test -f "$DESTINATION/EFI/BOOT/BOOTx64.efi"
-          test -f "$DESTINATION/EFI/OC/OpenCore.efi"
-          test -f "$DESTINATION/EFI/OC/config.plist"
-
-          if [ "$BUILD_STATUS" -ne 0 ]; then
-            echo "::warning::OCLP exited with status $BUILD_STATUS, but the generated EFI passed the required file checks."
-          fi
-
-          echo "Successfully preserved EFI for $MODEL"
-
-          find "$DESTINATION/EFI" \
-            -maxdepth 3 \
-            -type f \
-            -print
-
-      - name: Upload EFI
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: OCLP-EFI-${{ inputs.model }}
-          path: Build-Folder/OpenCore-Build/
-          if-no-files-found: error
-          include-hidden-files: true
-          retention-days: 7
+          path: oclp/Build-Folder/OpenCore-Build
